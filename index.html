@@ -132,14 +132,15 @@
   .fab.busy{ animation: pulse 1s ease-in-out infinite; }
   .fab:disabled{ opacity:.6; }
 
-  /* Layers popover — opens above the FAB stack, never covers it */
-  #layersSheet{
+  /* Popovers (layers, wind) — open above the FAB stack, never cover it */
+  .sheet{
     display:none; flex-direction:column; gap:12px;
     width: min(78vw, 280px);
     background: var(--panel); border:1px solid var(--panel-border); border-radius:16px;
     padding:14px; box-shadow: var(--shadow);
   }
-  #layersSheet.open{ display:flex; }
+  .sheet.open{ display:flex; }
+  .windArrow{ display:inline-block; font-size:20px; line-height:1; }
   .sheetLabel{ font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--text-dim); margin-bottom:6px; }
   .segmented{ display:flex; background:rgba(128,110,80,0.12); border-radius:10px; padding:3px; gap:3px; }
   .segBtn{
@@ -194,7 +195,14 @@
 </div>
 
 <div id="dockRight">
-  <div id="layersSheet">
+  <div id="windSheet" class="sheet">
+    <div>
+      <div class="sheetLabel">Vent &amp; précipitations — au centre de la carte</div>
+      <div id="windContent" class="sheetRow">Chargement…</div>
+    </div>
+  </div>
+
+  <div id="layersSheet" class="sheet">
     <div>
       <div class="sheetLabel">Fond de carte</div>
       <div class="segmented" id="basemapSeg">
@@ -221,6 +229,7 @@
 
   <div id="fabStack">
     <button class="fab" id="locateBtn" title="Ma position" aria-label="Ma position">📍</button>
+    <button class="fab" id="windBtn" title="Vent et précipitations" aria-label="Vent et précipitations">🌬️</button>
     <button class="fab" id="layersBtn" title="Calques" aria-label="Calques">🗂️</button>
     <button class="fab primary" id="franceBtn" title="Recentrer France" aria-label="Recentrer France">🇫🇷</button>
   </div>
@@ -344,7 +353,7 @@
     var myGeneration = ++loadGeneration;
     setStatus('Chargement des données de feux…');
     var slowTimer = setTimeout(function(){
-      if (myGeneration === loadGeneration) setStatus('Le service NASA (FIRMS) répond lentement aujourd'hui — patiente, ça va arriver…');
+      if (myGeneration === loadGeneration) setStatus('Le service NASA (FIRMS) répond lentement aujourd’hui — patiente, ça va arriver…');
     }, 6000);
 
     var loaded = 0, errored = 0, layers = [viirsLayer, modisLayer].filter(Boolean);
@@ -405,19 +414,68 @@
     rebuildLayers();
   });
 
-  // ---- Layers popover: opened from the FAB, closed by tapping it again or the map ----
-  var layersBtn = document.getElementById('layersBtn');
-  var layersSheet = document.getElementById('layersSheet');
-  layersBtn.addEventListener('click', function(e){
-    e.stopPropagation();
-    var open = layersSheet.classList.toggle('open');
-    layersBtn.classList.toggle('active', open);
+  // ---- Popovers (layers, wind): opened from their FAB, mutually exclusive,
+  // closed by tapping their FAB again or tapping the map. ----
+  var popovers = [
+    { btn: document.getElementById('layersBtn'), sheet: document.getElementById('layersSheet') },
+    { btn: document.getElementById('windBtn'), sheet: document.getElementById('windSheet'), onOpen: function(){ fetchWind(); } }
+  ];
+  function closeAllPopovers(){
+    popovers.forEach(function(p){ p.sheet.classList.remove('open'); p.btn.classList.remove('active'); });
+  }
+  popovers.forEach(function(p){
+    p.btn.addEventListener('click', function(e){
+      e.stopPropagation();
+      var wasOpen = p.sheet.classList.contains('open');
+      closeAllPopovers();
+      if (!wasOpen){
+        p.sheet.classList.add('open');
+        p.btn.classList.add('active');
+        if (p.onOpen) p.onOpen();
+      }
+    });
   });
-  map.on('click', function(){
-    if (layersSheet.classList.contains('open')){
-      layersSheet.classList.remove('open');
-      layersBtn.classList.remove('active');
-    }
+  map.on('click', closeAllPopovers);
+
+  // ---- Wind & precipitation (Open-Meteo, free, no API key) — for whatever
+  // point is currently at the center of the map, refreshed while the panel is open. ----
+  var windContentEl = document.getElementById('windContent');
+  var windSheetEl = document.getElementById('windSheet');
+  var COMPASS = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+  function degToCompass(deg){ return COMPASS[Math.round(deg / 22.5) % 16]; }
+
+  function fetchWind(){
+    windContentEl.textContent = 'Chargement…';
+    var c = map.getCenter();
+    var url = 'https://api.open-meteo.com/v1/forecast?latitude=' + c.lat.toFixed(3) +
+      '&longitude=' + c.lng.toFixed(3) +
+      '&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation' +
+      '&hourly=precipitation_probability' +
+      '&forecast_days=1&timezone=auto';
+    fetch(url).then(function(r){
+      if (!r.ok) throw new Error('http ' + r.status);
+      return r.json();
+    }).then(function(data){
+      var cur = data.current;
+      var downwind = (cur.wind_direction_10m + 180) % 360;
+      var hourly = data.hourly;
+      var nowIdx = hourly.time.findIndex(function(t){ return new Date(t) >= new Date(cur.time); });
+      if (nowIdx < 0) nowIdx = 0;
+      var next6 = hourly.precipitation_probability.slice(nowIdx, nowIdx + 6);
+      var maxProb = next6.length ? Math.max.apply(null, next6) : 0;
+      windContentEl.innerHTML =
+        '<div class="sheetRow" style="font-size:14px;color:var(--text);">' +
+          '<span class="windArrow" style="transform:rotate(' + downwind + 'deg);">↑</span>' +
+          '<span>' + Math.round(cur.wind_speed_10m) + ' km/h depuis le ' + degToCompass(cur.wind_direction_10m) + '</span>' +
+        '</div>' +
+        '<div class="sheetRow">Rafales : ' + Math.round(cur.wind_gusts_10m) + ' km/h</div>' +
+        '<div class="sheetRow">Pluie (prochaines 6h) : ' + Math.round(maxProb) + '% max</div>';
+    }).catch(function(){
+      windContentEl.textContent = "Impossible de récupérer la météo pour l'instant.";
+    });
+  }
+  map.on('moveend', function(){
+    if (windSheetEl.classList.contains('open')) fetchWind();
   });
 
   var refreshBtn = document.getElementById('refreshBtn');
