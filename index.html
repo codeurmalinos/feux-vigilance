@@ -270,6 +270,7 @@
   function currentDate(){ return state.day === 'today' ? todayUTC() : yesterdayUTC(); }
 
   var baseLayer, viirsLayer, modisLayer;
+  var loadGeneration = 0; // see rebuildLayers() — guards the slow-source timer against stale rebuilds
 
   // ---- Basemap: plain raster tiles, no fire data involved ----
   var ATTR_MAP = '© OpenStreetMap, © CARTO';
@@ -335,10 +336,23 @@
       modisLayer = null;
     }
 
+    // The NASA GIBS server that supplies fire hotspots can get very slow under
+    // heavy load (observed 5–35s+ per tile during a wildfire-season traffic spike),
+    // with no error — just silence. Without this, the status bar sits on "Mise à
+    // jour…" indefinitely and the site looks broken. `loadGeneration` guards against
+    // a stale timer firing after the user has already switched day/basemap/etc.
+    var myGeneration = ++loadGeneration;
+    setStatus('Chargement des données de feux…');
+    var slowTimer = setTimeout(function(){
+      if (myGeneration === loadGeneration) setStatus('Le service NASA (FIRMS) répond lentement aujourd'hui — patiente, ça va arriver…');
+    }, 6000);
+
     var loaded = 0, errored = 0, layers = [viirsLayer, modisLayer].filter(Boolean);
     function done(){
       loaded++;
       if (loaded >= layers.length){
+        clearTimeout(slowTimer);
+        if (myGeneration !== loadGeneration) return; // superseded by a newer rebuild
         var prefix = errored > 0 ? 'Connexion instable · ' : 'À jour · ';
         var note = state.day === 'today' ? ' · couverture partielle, se complète dans la journée' : '';
         setStatus(prefix + dateLabel() + ' · ' + nowLabel() + note);
