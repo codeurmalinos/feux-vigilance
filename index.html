@@ -66,8 +66,11 @@
   :root[data-theme="dark"] .basemap-tile{ filter: saturate(0.95) contrast(1.08); }
   /* Satellite imagery already reads clearly — skip the darkening filter so land/sea/relief stay legible */
   .basemap-tile.satellite{ filter: saturate(1.05) brightness(0.97) contrast(1.05) !important; }
-  /* Small glow on the fire pixels so isolated hotspots don't get lost against either theme */
-  .fire-tile{ filter: saturate(1.5) contrast(1.25) drop-shadow(0 0 2px rgba(255,90,20,0.9)); }
+  /* Small glow on the fire pixels so isolated hotspots don't get lost against either theme.
+     No drop-shadow here: it's recomputed per-frame during pan/zoom transforms and is
+     noticeably expensive on mobile GPUs — saturate/contrast alone give the same "pop"
+     against both themes without the repaint cost. */
+  .fire-tile{ filter: saturate(1.6) contrast(1.35) brightness(1.1); }
 
   .leaflet-control-zoom{ display:none; } /* pinch-to-zoom only, keeps it uncluttered */
 
@@ -289,14 +292,18 @@
     if (state.basemap === 'satellite'){
       return L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
         maxZoom: 19,
-        className: 'basemap-tile satellite'
+        className: 'basemap-tile satellite',
+        keepBuffer: 4,
+        updateWhenZooming: false
       });
     }
     var dark = resolvedTheme() === 'dark';
     return L.tileLayer('https://{s}.basemaps.cartocdn.com/' + (dark ? 'dark_all' : 'light_all') + '/{z}/{x}/{y}{r}.png', {
       subdomains: 'abcd',
       maxZoom: 20,
-      className: 'basemap-tile'
+      className: 'basemap-tile',
+      keepBuffer: 4,
+      updateWhenZooming: false
     });
   }
 
@@ -326,6 +333,17 @@
       v: state.cacheBust, // harmless extra param, busts caches on manual refresh
       opacity: opacity,
       maxZoom: 17,
+      // VIIRS/MODIS hotspot pixels are 375m-1km — zooming in past z9 shows no extra
+      // real detail anyway. Measured live: each WMS GetMap tile takes NASA's server
+      // 0.5s to 78s (!) to render on demand, uncached, and a fresh batch of ~9 tiles
+      // gets requested on every zoom change. Capping maxNativeZoom stops firing new
+      // slow requests past that level — Leaflet just scales up the last tiles it
+      // already has, which is exactly what was causing hotspots to vanish for
+      // several seconds (or indefinitely) when zooming in on a region.
+      maxNativeZoom: 9,
+      tileSize: 512, // fewer, larger WMS requests per screen instead of many small ones
+      updateWhenZooming: false, // don't fire a wave of requests for intermediate pinch-zoom frames on mobile
+      keepBuffer: 4,
       className: 'fire-tile',
       attribution: 'NASA FIRMS/GIBS'
     });
