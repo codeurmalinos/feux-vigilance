@@ -13,7 +13,6 @@
 <meta name="theme-color" content="#14110f">
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%2314110f'/%3E%3Cpath d='M50 12c8 14-4 18-4 28 0 8 6 12 12 12 8 0 14-6 14-14 0-6-3-10-3-10s10 8 10 24c0 18-15 32-32 32S15 70 15 56c0-20 14-24 18-38 2 8 5 10 8 8-3-6-1-14 9-14z' fill='%23e8622c'/%3E%3C/svg%3E">
 <link rel="manifest" href="manifest.webmanifest">
-
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 
@@ -61,9 +60,12 @@
   /* Only the basemap tiles get darkened/desaturated — never the fire overlay,
      otherwise the hotspots become invisible (this was the original bug). */
   .basemap-tile{ filter: saturate(0.8) brightness(0.92) contrast(1.04); }
-  /* CARTO's dark tiles are already tuned for legibility (land/sea/border contrast) —
-     the previous brightness(0.6) crushed that contrast to near-black. Only a light touch now. */
-  :root[data-theme="dark"] .basemap-tile{ filter: saturate(0.95) contrast(1.08); }
+  /* Dark theme: the source tiles (OSM standard) are always the light style — CARTO's
+     own dark tiles were dropped because they hardcode English place names ("Geneva",
+     "Burgundy-Free County"...) with no way to force French. Approximate a dark map by
+     inverting the light tile (common trick for providers with no native dark style);
+     hue-rotate cancels the invert's color-swap so land/water/roads keep sane colors. */
+  :root[data-theme="dark"] .basemap-tile{ filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.9) saturate(0.7); }
   /* Satellite imagery already reads clearly — skip the darkening filter so land/sea/relief stay legible */
   .basemap-tile.satellite{ filter: saturate(1.05) brightness(0.97) contrast(1.05) !important; }
   /* Small glow on the fire pixels so isolated hotspots don't get lost against either theme.
@@ -73,7 +75,6 @@
   .fire-tile{ filter: saturate(1.6) contrast(1.35) brightness(1.1); }
 
   .leaflet-control-zoom{ display:none; } /* pinch-to-zoom only, keeps it uncluttered */
-
   /* Top bar */
   #topbar{
     position:fixed; top:0; left:0; right:0;
@@ -92,6 +93,7 @@
   @keyframes pulse{ 0%,100%{opacity:1} 50%{opacity:.35} }
   #brand h1{ font-size:15px; font-weight:700; color:#fff; margin:0; letter-spacing:.2px; text-shadow:0 1px 3px rgba(0,0,0,0.5); }
   #status{ font-size:10.5px; color:#e8e0d4; margin-top:1px; text-shadow:0 1px 3px rgba(0,0,0,0.5); }
+  #freshness{ font-size:9.5px; color:#c9c0b2; text-shadow:0 1px 3px rgba(0,0,0,0.5); }
 
   .roundBtn{
     background: var(--panel); border:1px solid var(--panel-border); color:var(--text);
@@ -134,7 +136,6 @@
   .fab.active{ background: rgba(232,98,44,0.16); border-color: var(--ember-dim); color: var(--ember); }
   .fab.busy{ animation: pulse 1s ease-in-out infinite; }
   .fab:disabled{ opacity:.6; }
-
   /* Popovers (layers, wind) — open above the FAB stack, never cover it */
   .sheet{
     display:none; flex-direction:column; gap:12px;
@@ -182,6 +183,7 @@
     <div>
       <h1><span class="dot"></span> Feux France</h1>
       <div id="status">Chargement…</div>
+      <div id="freshness"></div>
     </div>
   </div>
   <div id="topbarBtns">
@@ -191,17 +193,17 @@
     </button>
   </div>
 </div>
-
 <div id="hint">
-  <b>Astuce :</b> ajoute cette page à ton écran d'accueil (menu du navigateur → « Sur l'écran d'accueil ») pour l'ouvrir comme une appli, en un geste.
+  Outil indépendant (sources : NASA FIRMS/GIBS, Open-Meteo) — ne remplace pas les consignes officielles. <b>Urgence incendie : 18 ou 112.</b>
+  <br><br><b>Astuce :</b> ajoute cette page à ton écran d'accueil (menu du navigateur → « Sur l'écran d'accueil ») pour l'ouvrir comme une appli, en un geste.
   <br><button id="hintClose">Compris</button>
 </div>
 
 <div id="dockRight">
   <div id="windSheet" class="sheet">
     <div>
-      <div class="sheetLabel">Vent &amp; précipitations — au centre de la carte</div>
-      <div id="windContent" class="sheetRow">Chargement…</div>
+      <div class="sheetLabel">Vent, précipitations &amp; air — au centre de la carte</div>
+      <div id="windContent" style="display:flex;flex-direction:column;gap:6px;">Chargement…</div>
     </div>
   </div>
 
@@ -219,6 +221,10 @@
       <label class="sheetToggle">
         <input type="checkbox" id="chipModis">
         <span class="sw" style="background:#ffb238"></span> + historique large (MODIS 1 km)
+      </label>
+      <label class="sheetToggle">
+        <input type="checkbox" id="chipPoints" checked>
+        <span class="sw" style="background:#d9480f"></span> Points précis, cliquables (détails)
       </label>
     </div>
     <div>
@@ -239,14 +245,13 @@
 </div>
 
 <div id="sourcesBar"></div>
-
 <script>
 (function(){
   // ---- Theme handling ----
   var themeBtn = document.getElementById('themeBtn');
   var savedTheme = null;
   try { savedTheme = localStorage.getItem('feuxTheme'); } catch(e){}
-  var state = { day: 'today', showModis: false, cacheBust: Date.now(),
+  var state = { day: 'today', showModis: false, showPoints: true, cacheBust: Date.now(),
                 basemap: 'map' /* 'map' | 'satellite' */,
                 theme: savedTheme /* 'light' | 'dark' | null (= follow system) */ };
 
@@ -281,11 +286,10 @@
   function yesterdayUTC(){ var d = new Date(); d.setUTCDate(d.getUTCDate()-1); return d; }
   function currentDate(){ return state.day === 'today' ? todayUTC() : yesterdayUTC(); }
 
-  var baseLayer, viirsLayer, modisLayer;
-  var loadGeneration = 0; // see rebuildLayers() — guards the slow-source timer against stale rebuilds
-
+  var baseLayer;
+  var loadGeneration = 0; // see refreshFireData() — guards the slow-source timer against stale rebuilds
   // ---- Basemap: plain raster tiles, no fire data involved ----
-  var ATTR_MAP = '© OpenStreetMap, © CARTO';
+  var ATTR_MAP = 'IGN-F/Géoportail';
   var ATTR_SATELLITE = 'Esri, Maxar, Earthstar Geographics';
 
   function buildBasemap(){
@@ -297,10 +301,14 @@
         updateWhenZooming: false
       });
     }
-    var dark = resolvedTheme() === 'dark';
-    return L.tileLayer('https://{s}.basemaps.cartocdn.com/' + (dark ? 'dark_all' : 'light_all') + '/{z}/{x}/{y}{r}.png', {
-      subdomains: 'abcd',
-      maxZoom: 20,
+    // Plan IGN v2, via IGN's Géoplateforme (cartes.gouv.fr's engine, data.geopf.fr) —
+    // France's official map, so place names are guaranteed correct French (unlike CARTO,
+    // dropped earlier for hardcoding English exonyms — see git history). Free, keyless,
+    // no rate-limit auth needed for this "essentiels" layer. No native dark style, so
+    // dark theme uses an inverted filter (see .basemap-tile CSS) instead of a separate
+    // tile style, same trick as the OSM fallback this replaces.
+    return L.tileLayer('https://data.geopf.fr/wmts?SERVICE=WMTS&VERSION=1.0.0&REQUEST=GetTile&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/png', {
+      maxZoom: 18,
       className: 'basemap-tile',
       keepBuffer: 4,
       updateWhenZooming: false
@@ -312,7 +320,6 @@
     var basemapAttr = state.basemap === 'satellite' ? ATTR_SATELLITE : ATTR_MAP;
     document.getElementById('sourcesBar').textContent = 'NASA FIRMS/GIBS · ' + basemapAttr;
   }
-
   // ---- Fire hotspots: NASA GIBS WMS (server-side rendering) ----
   // Important: GIBS also *advertises* these fire layers as WMTS vector tiles
   // (.mvt), but those are only published in EPSG:4326/EPSG:3413 — NOT Web
@@ -323,72 +330,175 @@
   var VIIRS_LAYERS = 'VIIRS_SNPP_Thermal_Anomalies_375m_All,VIIRS_NOAA20_Thermal_Anomalies_375m_All,VIIRS_NOAA21_Thermal_Anomalies_375m_All';
   var MODIS_LAYERS = 'MODIS_Combined_Thermal_Anomalies_All';
 
-  function fireLayer(layers, opacity){
-    return L.tileLayer.wms(GIBS_WMS, {
-      layers: layers,
-      format: 'image/png',
-      transparent: true,
-      version: '1.3.0',
+  // Fire hotspots used to be a Leaflet WMS *tile* layer: on every zoom/pan Leaflet
+  // requests a whole grid (~9+) of independently-rendered tiles covering the world
+  // grid cell-by-cell, each a separate slow round trip to NASA's on-demand renderer
+  // (measured live: 0.5–78s per tile). Zooming into one small area still meant NASA
+  // had to render tiles for the *whole* zoom-level grid intersecting the screen.
+  //
+  // Instead we now fetch exactly one image sized to the current viewport (a plain
+  // WMS GetMap call, not tiled) — fewer, smaller requests, no queueing behind the
+  // browser's ~6-connections-per-host limit, and it naturally only asks for what's
+  // actually on screen. Refetched on moveend so panning/zooming always shows the
+  // right area; the previous image stays visible until the new one has loaded, so
+  // there's never a blank gap while waiting on NASA.
+  var fireOverlays = {}; // key ('viirs'|'modis') -> the L.imageOverlay currently on the map
+  var FIRE_FRESH_MAX_ZOOM = 9; // VIIRS/MODIS pixels are 375m-1km — no extra real detail past here,
+                                // so we stop asking NASA for fresh renders and just let Leaflet
+                                // rescale the last image (also means zooming in on your area never
+                                // blocks on a new slow NASA call)
+  function buildGibsUrl(layers, bounds, size){
+    var sw = map.options.crs.project(bounds.getSouthWest());
+    var ne = map.options.crs.project(bounds.getNorthEast());
+    var qs = {
+      service: 'WMS', request: 'GetMap', version: '1.3.0',
+      layers: layers, format: 'image/png', transparent: true, crs: 'EPSG:3857',
+      bbox: [sw.x, sw.y, ne.x, ne.y].join(','),
+      width: Math.max(1, Math.round(size.x)), height: Math.max(1, Math.round(size.y)),
       time: isoDate(currentDate()),
-      v: state.cacheBust, // harmless extra param, busts caches on manual refresh
-      opacity: opacity,
-      maxZoom: 17,
-      // VIIRS/MODIS hotspot pixels are 375m-1km — zooming in past z9 shows no extra
-      // real detail anyway. Measured live: each WMS GetMap tile takes NASA's server
-      // 0.5s to 78s (!) to render on demand, uncached, and a fresh batch of ~9 tiles
-      // gets requested on every zoom change. Capping maxNativeZoom stops firing new
-      // slow requests past that level — Leaflet just scales up the last tiles it
-      // already has, which is exactly what was causing hotspots to vanish for
-      // several seconds (or indefinitely) when zooming in on a region.
-      maxNativeZoom: 9,
-      tileSize: 512, // fewer, larger WMS requests per screen instead of many small ones
-      updateWhenZooming: false, // don't fire a wave of requests for intermediate pinch-zoom frames on mobile
-      keepBuffer: 4,
-      className: 'fire-tile',
-      attribution: 'NASA FIRMS/GIBS'
-    });
+      v: state.cacheBust // harmless extra param, busts caches on manual refresh
+    };
+    return GIBS_WMS + '?' + Object.keys(qs).map(function(k){ return k + '=' + encodeURIComponent(qs[k]); }).join('&');
   }
 
-  function rebuildLayers(){
-    [baseLayer, viirsLayer, modisLayer].forEach(function(l){ if (l && map.hasLayer(l)) map.removeLayer(l); });
+  function clearFireOverlay(key){
+    if (fireOverlays[key]){ map.removeLayer(fireOverlays[key]); fireOverlays[key] = null; }
+  }
 
-    baseLayer = buildBasemap().addTo(map);
-    baseLayer.bringToBack();
-    updateSourcesBar();
-
-    viirsLayer = fireLayer(VIIRS_LAYERS, 1).addTo(map);
-    if (state.showModis){
-      modisLayer = fireLayer(MODIS_LAYERS, 0.85).addTo(map);
-    } else {
-      modisLayer = null;
+  function loadFireOverlay(key, urlBuilder, opacity, cb){
+    if (map.getZoom() > FIRE_FRESH_MAX_ZOOM && fireOverlays[key]){ cb(false); return; }
+    var bounds = map.getBounds().pad(0.15); // small margin so minor panning doesn't instantly reveal an empty edge
+    var url = urlBuilder(bounds, map.getSize());
+    var preload = new Image();
+    preload.onload = function(){
+      var overlay = L.imageOverlay(url, bounds, { opacity: opacity, className: 'fire-tile', interactive: false }).addTo(map);
+      var old = fireOverlays[key];
+      fireOverlays[key] = overlay;
+      if (old) map.removeLayer(old); // swap only after the new image is ready — old stays visible until then
+      cb(false);
+    };
+    preload.onerror = function(){ cb(true); };
+    preload.src = url;
+  }
+  // forceFresh: bypass the "already have an overlay past FIRE_FRESH_MAX_ZOOM" reuse —
+  // used when the underlying data actually changed (day toggle, MODIS toggle, manual refresh).
+  function refreshFireData(forceFresh){
+    if (forceFresh){
+      clearFireOverlay('viirs');
+      clearFireOverlay('modis');
     }
+    if (!state.showModis) clearFireOverlay('modis');
 
     // The NASA GIBS server that supplies fire hotspots can get very slow under
-    // heavy load (observed 5–35s+ per tile during a wildfire-season traffic spike),
-    // with no error — just silence. Without this, the status bar sits on "Mise à
-    // jour…" indefinitely and the site looks broken. `loadGeneration` guards against
-    // a stale timer firing after the user has already switched day/basemap/etc.
+    // heavy load, with no error — just silence. Without this, the status bar sits on
+    // "Mise à jour…" indefinitely and the site looks broken. `loadGeneration` guards
+    // against a stale timer/status firing after a newer refresh has superseded it.
     var myGeneration = ++loadGeneration;
     setStatus('Chargement des données de feux…');
     var slowTimer = setTimeout(function(){
       if (myGeneration === loadGeneration) setStatus('Le service NASA (FIRMS) répond lentement aujourd’hui — patiente, ça va arriver…');
     }, 6000);
 
-    var loaded = 0, errored = 0, layers = [viirsLayer, modisLayer].filter(Boolean);
-    function done(){
-      loaded++;
-      if (loaded >= layers.length){
-        clearTimeout(slowTimer);
-        if (myGeneration !== loadGeneration) return; // superseded by a newer rebuild
-        var prefix = errored > 0 ? 'Connexion instable · ' : 'À jour · ';
-        var note = state.day === 'today' ? ' · couverture partielle, se complète dans la journée' : '';
-        setStatus(prefix + dateLabel() + ' · ' + nowLabel() + note);
-      }
-    }
-    layers.forEach(function(l){
-      l.on('load', done);
-      l.on('tileerror', function(){ errored++; });
+    var wanted = [{ key: 'viirs', urlBuilder: function(b,s){ return buildGibsUrl(VIIRS_LAYERS,b,s); }, opacity: 1 }];
+    if (state.showModis) wanted.push({ key: 'modis', urlBuilder: function(b,s){ return buildGibsUrl(MODIS_LAYERS,b,s); }, opacity: 0.85 });
+
+    var done = 0, errored = 0;
+    wanted.forEach(function(w){
+      loadFireOverlay(w.key, w.urlBuilder, w.opacity, function(err){
+        if (err) errored++;
+        done++;
+        if (done >= wanted.length){
+          clearTimeout(slowTimer);
+          if (myGeneration !== loadGeneration) return; // superseded by a newer refresh
+          var prefix = errored > 0 ? 'Connexion instable · ' : 'À jour · ';
+          var note = state.day === 'today' ? ' · couverture partielle, se complète dans la journée' : '';
+          setStatus(prefix + dateLabel() + ' · ' + nowLabel() + note);
+          lastLoadTs = Date.now();
+          tickFreshness();
+        }
+      });
     });
+  }
+  // ---- Fire hotspots: exact points (NASA FIRMS, via Cloudflare Worker proxy) ----
+  // Complements the GIBS raster above with individual, tappable hotspots (date, heure,
+  // confiance, puissance radiative) — like feux-gironde.fr. The FIRMS API has no CORS
+  // header, so a static site can't call it directly from the browser; this proxy (a
+  // separate, pseudonymous Cloudflare Worker — see feux-vigilance-firms-proxy.worker.js)
+  // just relays the request and adds the missing header.
+  var FIRMS_PROXY_URL = 'https://feux-firms-proxy.codeurmalinos.workers.dev';
+  var FIRMS_BBOX = '-5,41,10,51'; // France métropolitaine + marge — même valeur que le Worker
+  var FIRMS_MAX_POINTS = 5000; // garde-fou si une saison de feux extrême sature le rendu
+  var firmsPointsLayer = L.layerGroup().addTo(map);
+  var FIRMS_CONFIDENCE = {
+    l: { label: 'faible', color: '#ffb238' }, low: { label: 'faible', color: '#ffb238' },
+    n: { label: 'nominale', color: '#ff5a1a' }, nominal: { label: 'nominale', color: '#ff5a1a' },
+    h: { label: 'élevée', color: '#d9480f' }, high: { label: 'élevée', color: '#d9480f' }
+  };
+
+  function parseFirmsCsv(text){
+    var lines = text.trim().split('\n');
+    if (lines.length < 2) return [];
+    var headers = lines[0].split(',').map(function(h){ return h.trim(); });
+    var latIdx = headers.indexOf('latitude'), lonIdx = headers.indexOf('longitude');
+    var dateIdx = headers.indexOf('acq_date'), timeIdx = headers.indexOf('acq_time');
+    var confIdx = headers.indexOf('confidence'), satIdx = headers.indexOf('satellite');
+    var frpIdx = headers.indexOf('frp');
+    var out = [];
+    for (var i = 1; i < lines.length; i++){
+      if (!lines[i]) continue;
+      var cols = lines[i].split(',');
+      var lat = parseFloat(cols[latIdx]), lon = parseFloat(cols[lonIdx]);
+      if (!isFinite(lat) || !isFinite(lon)) continue;
+      out.push({
+        lat: lat, lon: lon,
+        date: dateIdx > -1 ? cols[dateIdx] : '',
+        time: timeIdx > -1 ? cols[timeIdx] : '',
+        confidence: confIdx > -1 ? cols[confIdx] : '',
+        satellite: satIdx > -1 ? cols[satIdx] : '',
+        frp: frpIdx > -1 ? parseFloat(cols[frpIdx]) : null
+      });
+    }
+    return out;
+  }
+  function firmsTimeLabel(hhmm){
+    if (!hhmm) return '';
+    var padded = hhmm.length < 4 ? ('0'.repeat(4 - hhmm.length) + hhmm) : hhmm;
+    return padded.slice(0,2) + ':' + padded.slice(2) + ' UTC';
+  }
+
+  function refreshFirmsPoints(){
+    firmsPointsLayer.clearLayers();
+    if (!FIRMS_PROXY_URL || !state.showPoints) return;
+    var wantedDate = isoDate(currentDate());
+    var url = FIRMS_PROXY_URL + '?bbox=' + encodeURIComponent(FIRMS_BBOX) + '&days=2&source=VIIRS_SNPP_NRT';
+    fetch(url).then(function(r){ if (!r.ok) throw new Error('http ' + r.status); return r.text(); })
+      .then(function(text){
+        if (!state.showPoints) return; // toggled off while the request was in flight
+        var points = parseFirmsCsv(text).filter(function(p){ return p.date === wantedDate; });
+        if (points.length > FIRMS_MAX_POINTS) points = points.slice(0, FIRMS_MAX_POINTS);
+        points.forEach(function(p){
+          var conf = FIRMS_CONFIDENCE[(p.confidence || '').toLowerCase()] || { label: p.confidence || '—', color: '#ff5a1a' };
+          var marker = L.circleMarker([p.lat, p.lon], {
+            radius: 5, weight: 1.5, color: '#fff', fillColor: conf.color, fillOpacity: 0.9
+          });
+          marker.bindPopup(
+            '<b>Point de chaleur détecté</b><br>' +
+            dateLabel() + ' · ' + firmsTimeLabel(p.time) + '<br>' +
+            'Confiance : ' + conf.label + (p.satellite ? ' · ' + p.satellite : '') +
+            (p.frp ? '<br>Puissance radiative : ' + p.frp.toFixed(0) + ' MW' : '')
+          );
+          marker.addTo(firmsPointsLayer);
+        });
+      })
+      .catch(function(){ /* silencieux — la couche raster ci-dessus montre déjà l'activité feux même si les points échouent */ });
+  }
+  function rebuildLayers(){
+    if (baseLayer && map.hasLayer(baseLayer)) map.removeLayer(baseLayer);
+    baseLayer = buildBasemap().addTo(map);
+    baseLayer.bringToBack();
+    updateSourcesBar();
+    refreshFireData(true);
+    refreshFirmsPoints();
   }
 
   function nowLabel(){
@@ -398,6 +508,15 @@
     return currentDate().toLocaleDateString('fr-FR', { day:'numeric', month:'long', timeZone:'UTC' });
   }
   function setStatus(txt){ document.getElementById('status').textContent = txt; }
+
+  var lastLoadTs = null;
+  function tickFreshness(){
+    var el = document.getElementById('freshness');
+    if (!el || !lastLoadTs) return;
+    var mins = Math.round((Date.now() - lastLoadTs) / 60000);
+    el.textContent = mins < 1 ? 'actualisé à l’instant' : 'actualisé il y a ' + mins + ' min';
+  }
+  setInterval(tickFreshness, 30000);
 
   rebuildLayers();
 
@@ -432,6 +551,10 @@
     rebuildLayers();
   });
 
+  document.getElementById('chipPoints').addEventListener('change', function(e){
+    state.showPoints = e.target.checked;
+    refreshFirmsPoints();
+  });
   // ---- Popovers (layers, wind): opened from their FAB, mutually exclusive,
   // closed by tapping their FAB again or tapping the map. ----
   var popovers = [
@@ -455,6 +578,15 @@
   });
   map.on('click', closeAllPopovers);
 
+  // Reload the fire overlay(s) for whatever's now visible after a pan/zoom settles —
+  // this is what makes zooming into your area of interest not wait on data for the
+  // rest of France. Debounced slightly so a fast flick of gestures doesn't fire a
+  // request per intermediate step.
+  var fireMoveTimer = null;
+  map.on('moveend', function(){
+    clearTimeout(fireMoveTimer);
+    fireMoveTimer = setTimeout(function(){ refreshFireData(false); }, 150);
+  });
   // ---- Wind & precipitation (Open-Meteo, free, no API key) — for whatever
   // point is currently at the center of the map, refreshed while the panel is open. ----
   var windContentEl = document.getElementById('windContent');
@@ -462,18 +594,31 @@
   var COMPASS = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
   function degToCompass(deg){ return COMPASS[Math.round(deg / 22.5) % 16]; }
 
+  // European AQI scale (Open-Meteo air quality API) — same bins the EU uses for its own index.
+  function aqiInfo(aqi){
+    if (aqi <= 20) return { label: 'bon', color: '#7fce68' };
+    if (aqi <= 40) return { label: 'moyen', color: '#ffd166' };
+    if (aqi <= 60) return { label: 'dégradé', color: '#ffa63d' };
+    if (aqi <= 80) return { label: 'mauvais', color: '#ff6b3d' };
+    if (aqi <= 100) return { label: 'très mauvais', color: '#e8492c' };
+    return { label: 'extrêmement mauvais', color: '#b8390c' };
+  }
+
   function fetchWind(){
     windContentEl.textContent = 'Chargement…';
     var c = map.getCenter();
-    var url = 'https://api.open-meteo.com/v1/forecast?latitude=' + c.lat.toFixed(3) +
+    var windUrl = 'https://api.open-meteo.com/v1/forecast?latitude=' + c.lat.toFixed(3) +
       '&longitude=' + c.lng.toFixed(3) +
       '&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation' +
       '&hourly=precipitation_probability' +
       '&forecast_days=1&timezone=auto';
-    fetch(url).then(function(r){
-      if (!r.ok) throw new Error('http ' + r.status);
-      return r.json();
-    }).then(function(data){
+    var aqiUrl = 'https://air-quality-api.open-meteo.com/v1/air-quality?latitude=' + c.lat.toFixed(3) +
+      '&longitude=' + c.lng.toFixed(3) + '&current=european_aqi';
+    Promise.all([
+      fetch(windUrl).then(function(r){ if (!r.ok) throw new Error('http ' + r.status); return r.json(); }),
+      fetch(aqiUrl).then(function(r){ if (!r.ok) throw new Error('http ' + r.status); return r.json(); }).catch(function(){ return null; }) // air quality is a bonus — don't break wind display if it fails
+    ]).then(function(results){
+      var data = results[0], aqiData = results[1];
       var cur = data.current;
       var downwind = (cur.wind_direction_10m + 180) % 360;
       var hourly = data.hourly;
@@ -481,13 +626,22 @@
       if (nowIdx < 0) nowIdx = 0;
       var next6 = hourly.precipitation_probability.slice(nowIdx, nowIdx + 6);
       var maxProb = next6.length ? Math.max.apply(null, next6) : 0;
+
+      var aqiRow = '';
+      if (aqiData && aqiData.current && typeof aqiData.current.european_aqi === 'number'){
+        var aqi = Math.round(aqiData.current.european_aqi);
+        var info = aqiInfo(aqi);
+        aqiRow = '<div class="sheetRow"><span class="sw" style="background:' + info.color + '"></span> Qualité de l\'air : ' + aqi + ' — ' + info.label + '</div>';
+      }
+
       windContentEl.innerHTML =
         '<div class="sheetRow" style="font-size:14px;color:var(--text);">' +
           '<span class="windArrow" style="transform:rotate(' + downwind + 'deg);">↑</span>' +
           '<span>' + Math.round(cur.wind_speed_10m) + ' km/h depuis le ' + degToCompass(cur.wind_direction_10m) + '</span>' +
         '</div>' +
         '<div class="sheetRow">Rafales : ' + Math.round(cur.wind_gusts_10m) + ' km/h</div>' +
-        '<div class="sheetRow">Pluie (prochaines 6h) : ' + Math.round(maxProb) + '% max</div>';
+        '<div class="sheetRow">Pluie (prochaines 6h) : ' + Math.round(maxProb) + '% max</div>' +
+        aqiRow;
     }).catch(function(){
       windContentEl.textContent = "Impossible de récupérer la météo pour l'instant.";
     });
@@ -495,7 +649,6 @@
   map.on('moveend', function(){
     if (windSheetEl.classList.contains('open')) fetchWind();
   });
-
   var refreshBtn = document.getElementById('refreshBtn');
   function doRefresh(){
     refreshBtn.classList.add('spin');
@@ -528,7 +681,7 @@
       var ll = [pos.coords.latitude, pos.coords.longitude];
       if (meMarker) map.removeLayer(meMarker);
       meMarker = L.circleMarker(ll, { radius:8, color:'#fff', weight:3, fillColor:'#4fa8ff', fillOpacity:0.9 }).addTo(map);
-      map.setView(ll, 10);
+      map.setView(ll, 9);
       locateBtn.disabled = false;
       locateBtn.classList.remove('busy');
     }, function(err){
@@ -541,11 +694,10 @@
       alert(msg);
     }, { enableHighAccuracy:true, timeout:15000, maximumAge:60000 });
   });
-
   document.getElementById('hintClose').addEventListener('click', function(){
     document.getElementById('hint').style.display = 'none';
   });
-  setTimeout(function(){ var h = document.getElementById('hint'); if (h) h.style.display = 'none'; }, 9000);
+  setTimeout(function(){ var h = document.getElementById('hint'); if (h) h.style.display = 'none'; }, 15000);
 
   // React to the device switching light/dark while the page is open (only if the
   // user hasn't manually forced a theme via the toggle button).
