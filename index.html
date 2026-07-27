@@ -663,7 +663,6 @@
   var windField = null;        // { south, north, west, east, n, cells:[{u,v}] } — u/v in km/h, screen axes
   var windParticles = [];
   var windRaf = null;
-  var reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   function resizeWindCanvas(){
     var dpr = window.devicePixelRatio || 1;
@@ -680,7 +679,7 @@
     return { x: Math.random() * window.innerWidth, y: Math.random() * window.innerHeight, age: (Math.random() * 90) | 0 };
   }
   function ensureParticles(){
-    var target = Math.max(90, Math.min(220, Math.round(window.innerWidth * window.innerHeight / 6500)));
+    var target = Math.max(120, Math.min(240, Math.round(window.innerWidth * window.innerHeight / 5500)));
     windParticles = [];
     for (var i = 0; i < target; i++) windParticles.push(newParticle());
   }
@@ -707,19 +706,28 @@
     };
   }
 
-  var WIND_PX_SCALE = 0.045; // stylised km/h → px/frame factor, tuned by eye, not to real map scale
+  var WIND_PX_SCALE = 0.045; // stylised km/h → px/(60fps frame) factor, tuned by eye, not to real map scale
+  var WIND_FADE = 0.90;      // trail opacity kept per 60fps frame
+  var windLastT = null;
   function speedColor(speedKmh, alpha){
     // Cool (calm) → warm ember (strong), same idea as a classic wind-speed palette.
     var t = Math.max(0, Math.min(1, speedKmh / 45));
     var hue = 205 - t * 205; // 205 (blue) down to 0 (red)
     return 'hsla(' + hue.toFixed(0) + ',85%,58%,' + alpha + ')';
   }
-  function stepWindField(){
+  function stepWindField(t){
     windRaf = requestAnimationFrame(stepWindField);
     if (!windField) return;
+    // Normalize to a 60fps baseline — without this, phones running the map at 90/120Hz
+    // advected particles faster AND faded trails out quicker (both are per-frame), so the
+    // whole effect looked much fainter/shorter-lived on higher-refresh mobile screens.
+    var dt = windLastT == null ? 1 : (t - windLastT) / 16.67;
+    windLastT = t;
+    dt = Math.max(0.2, Math.min(3, dt || 1));
+
     var w = window.innerWidth, h = window.innerHeight;
     windCtx.globalCompositeOperation = 'destination-in';
-    windCtx.fillStyle = 'rgba(0,0,0,0.90)'; // fade existing trails toward transparent
+    windCtx.fillStyle = 'rgba(0,0,0,' + Math.pow(WIND_FADE, dt).toFixed(3) + ')';
     windCtx.fillRect(0, 0, w, h);
     windCtx.globalCompositeOperation = 'source-over';
 
@@ -727,14 +735,14 @@
       var p = windParticles[i];
       var latlng = map.containerPointToLatLng([p.x, p.y]);
       var wv = sampleWind(latlng.lat, latlng.lng);
-      p.age--;
+      p.age -= dt;
       if (!wv || p.age <= 0){
         var np = newParticle(); p.x = np.x; p.y = np.y; p.age = np.age;
         continue;
       }
       var px = p.x, py = p.y;
-      p.x += wv.u * WIND_PX_SCALE;
-      p.y += wv.v * WIND_PX_SCALE;
+      p.x += wv.u * WIND_PX_SCALE * dt;
+      p.y += wv.v * WIND_PX_SCALE * dt;
       if (p.x < 0 || p.x > w || p.y < 0 || p.y > h){
         var np2 = newParticle(); p.x = np2.x; p.y = np2.y; p.age = np2.age;
         continue;
@@ -747,20 +755,21 @@
       windCtx.beginPath();
       windCtx.moveTo(px, py);
       windCtx.lineTo(p.x, p.y);
-      windCtx.strokeStyle = 'rgba(0,0,0,0.35)';
-      windCtx.lineWidth = 2.6;
+      windCtx.strokeStyle = 'rgba(0,0,0,0.4)';
+      windCtx.lineWidth = 3;
       windCtx.stroke();
       windCtx.beginPath();
       windCtx.moveTo(px, py);
       windCtx.lineTo(p.x, p.y);
-      windCtx.strokeStyle = speedColor(speed, 0.9);
-      windCtx.lineWidth = 1.5;
+      windCtx.strokeStyle = speedColor(speed, 0.95);
+      windCtx.lineWidth = 1.8;
       windCtx.stroke();
     }
   }
   function startWindField(){
-    if (reduceMotion || windRaf) return;
+    if (windRaf) return;
     ensureParticles();
+    windLastT = null;
     windRaf = requestAnimationFrame(stepWindField);
   }
   function stopWindField(){
