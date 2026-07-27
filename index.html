@@ -141,38 +141,52 @@
   .fab.busy{ animation: pulse 1s ease-in-out infinite; }
   .fab:disabled{ opacity:.6; }
 
-  /* Popovers (layers, wind) — open above the FAB stack, never cover it */
+  /* Popovers (layers, wind) — open above the FAB stack, never cover it. Anchored at
+     the dock, i.e. the side of the frame, on purpose: it's readable against the map
+     margin instead of fighting the map's own labels at the center of the view. */
   .sheet{
-    display:none; flex-direction:column; gap:10px;
-    width: min(70vw, 240px);
-    background: rgba(var(--panel-rgb), 0.72); border:1px solid var(--panel-border); border-radius:16px;
-    padding:10px 12px; box-shadow: var(--shadow);
-    backdrop-filter: blur(14px) saturate(1.4);
-    -webkit-backdrop-filter: blur(14px) saturate(1.4);
+    display:none; flex-direction:column; gap:8px;
+    width: min(62vw, 210px);
+    background: rgba(var(--panel-rgb), 0.55); border:1px solid rgba(var(--panel-rgb), 0.6); border-radius:14px;
+    padding:8px 10px; box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+    backdrop-filter: blur(10px) saturate(1.6);
+    -webkit-backdrop-filter: blur(10px) saturate(1.6);
   }
   .sheet.open{ display:flex; }
-  .sheetLabel{ font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--text-dim); margin-bottom:4px; }
+  .sheetLabel{ font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--text-dim); margin-bottom:3px; }
 
-  /* Wind widget: a few curved streamlines drifting past a static arrowhead —
-     reads as "moving air" without any per-frame JS. Only stroke-dashoffset is
-     animated (cheap on 3 short paths); the whole group is rotated once to
-     point downwind, direction/speed never re-render the SVG, just re-rotate it. */
-  .windViz{ display:flex; align-items:center; justify-content:center; margin:2px 0; }
-  .windViz svg{ display:block; }
-  .wline{ fill:none; stroke:var(--text-dim); stroke-width:2.2; stroke-linecap:round; stroke-dasharray:7 7; animation: windFlow var(--wind-dur, 1.6s) linear infinite; }
-  .wline.w1{ opacity:.35; animation-delay:-0.5s; }
-  .wline.w2{ opacity:.6; stroke-width:2.6; animation-delay:-1.1s; }
-  .wline.w3{ opacity:.35; animation-delay:-0.2s; }
-  .warrow{ fill:none; stroke:var(--ember); stroke-width:2.6; stroke-linecap:round; stroke-linejoin:round; }
-  @keyframes windFlow{ to{ stroke-dashoffset:-28; } }
-  @media (prefers-reduced-motion: reduce){ .wline{ animation:none; } }
+  /* Wind sheet only: pinned to the bottom-left corner instead of sitting in the
+     #dockRight column — furthest possible from the FAB stack/other popovers, and
+     away from the map's own place labels which cluster more toward the center-right. */
+  #windSheet.sheet{
+    position:fixed; left:12px;
+    bottom: calc(max(12px, env(safe-area-inset-bottom)) + 26px);
+    z-index:1001;
+  }
+
+  /* Ventusky-style wind field: a canvas of short particle streaks advected along a
+     wind vector grid sampled from Open-Meteo (one multi-location request), redrawn
+     every frame with a fading trail. See fetchWind()/animateWindField() in the script. */
+  #windCanvas{ position:fixed; inset:0; z-index:500; pointer-events:none; display:none; }
+  #windCanvas.show{ display:block; }
+
+  /* Small scope mark at the exact map center — the point the wind reading refers to,
+     now that the flow field no longer has one obvious "here" like the old single arrow did. */
+  #windCenterMark{
+    position:fixed; left:50%; top:50%; width:22px; height:22px; transform:translate(-50%,-50%);
+    pointer-events:none; z-index:501; display:none; color:var(--ember);
+    filter:
+      drop-shadow(0 0 2px rgba(0,0,0,0.55)) drop-shadow(0 0 2px rgba(0,0,0,0.55))
+      drop-shadow(0 0 1.5px rgba(255,255,255,0.85));
+  }
+  #windCenterMark.show{ display:block; }
   .segmented{ display:flex; background:rgba(128,110,80,0.12); border-radius:10px; padding:3px; gap:3px; }
   .segBtn{
     flex:1; border:none; background:transparent; color:var(--text-dim);
     font-size:12px; font-weight:600; padding:7px 6px; border-radius:8px;
   }
   .segBtn.active{ background: var(--ember); color:#fff8f0; }
-  .sheetRow{ display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-dim); }
+  .sheetRow{ display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-dim); text-shadow: 0 1px 2px rgba(var(--panel-rgb),0.7); }
   .sheetToggle{ display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text); margin-top:8px; }
   .sheetToggle input{ width:16px; height:16px; accent-color: var(--ember); flex:0 0 auto; }
   .sw{ width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
@@ -197,6 +211,16 @@
 <body>
 
 <div id="map"></div>
+<canvas id="windCanvas"></canvas>
+<div id="windCenterMark">
+  <svg viewBox="0 0 22 22" width="22" height="22">
+    <circle cx="11" cy="11" r="5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+    <line x1="11" y1="0" x2="11" y2="4" stroke="currentColor" stroke-width="1.6"/>
+    <line x1="11" y1="18" x2="11" y2="22" stroke="currentColor" stroke-width="1.6"/>
+    <line x1="0" y1="11" x2="4" y2="11" stroke="currentColor" stroke-width="1.6"/>
+    <line x1="18" y1="11" x2="22" y2="11" stroke="currentColor" stroke-width="1.6"/>
+  </svg>
+</div>
 
 <div id="topbar">
   <div id="brand">
@@ -589,10 +613,14 @@
   // closed by tapping their FAB again or tapping the map. ----
   var popovers = [
     { btn: document.getElementById('layersBtn'), sheet: document.getElementById('layersSheet') },
-    { btn: document.getElementById('windBtn'), sheet: document.getElementById('windSheet'), onOpen: function(){ fetchWind(); } }
+    { btn: document.getElementById('windBtn'), sheet: document.getElementById('windSheet'),
+      onOpen: function(){ fetchWind(); }, onClose: function(){ stopWindField(); } }
   ];
   function closeAllPopovers(){
-    popovers.forEach(function(p){ p.sheet.classList.remove('open'); p.btn.classList.remove('active'); });
+    popovers.forEach(function(p){
+      if (p.sheet.classList.contains('open') && p.onClose) p.onClose();
+      p.sheet.classList.remove('open'); p.btn.classList.remove('active');
+    });
   }
   popovers.forEach(function(p){
     p.btn.addEventListener('click', function(e){
@@ -618,29 +646,132 @@
     fireMoveTimer = setTimeout(function(){ refreshFireData(false); }, 150);
   });
 
-  // ---- Wind & precipitation (Open-Meteo, free, no API key) — for whatever
-  // point is currently at the center of the map, refreshed while the panel is open. ----
+  // ---- Wind & precipitation (Open-Meteo, free, no API key) ----
+  // Ventusky-style continuous flow instead of discrete arrows: a 5x5 grid of wind
+  // vectors is sampled across the visible map (one multi-location request), then a
+  // canvas full of tiny particles is advected along that vector field frame by frame,
+  // trails fading out — reads as moving air rather than a handful of static icons.
   var windContentEl = document.getElementById('windContent');
   var windSheetEl = document.getElementById('windSheet');
+  var windCanvas = document.getElementById('windCanvas');
+  var windCenterMarkEl = document.getElementById('windCenterMark');
+  var windCtx = windCanvas.getContext('2d');
   var COMPASS = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
   function degToCompass(deg){ return COMPASS[Math.round(deg / 22.5) % 16]; }
 
-  // European AQI scale (Open-Meteo air quality API) — same bins the EU uses for its own index.
-  // Streamlines drift left→right at rest; rotating the whole SVG by (downwind-90)
-  // points that flow toward the downwind bearing (0deg = north = up, matching the map).
-  // Animation duration shortens with speed so a stronger breeze visibly moves faster.
-  function windVizHtml(downwindDeg, speedKmh){
-    var dur = Math.max(0.55, Math.min(2.2, 2.3 - speedKmh / 45));
-    return '<div class="windViz" style="transform:rotate(' + (downwindDeg - 90) + 'deg); --wind-dur:' + dur.toFixed(2) + 's;">' +
-      '<svg viewBox="0 0 64 32" width="52" height="26">' +
-        '<path class="wline w1" d="M2 8 Q20 3 62 8"/>' +
-        '<path class="wline w2" d="M2 16 Q20 11 62 16"/>' +
-        '<path class="wline w3" d="M2 24 Q20 19 62 24"/>' +
-        '<path class="warrow" d="M52 10 L62 16 L52 22"/>' +
-      '</svg>' +
-    '</div>';
+  var GRID_N = 5;
+  var windField = null;        // { south, north, west, east, n, cells:[{u,v}] } — u/v in km/h, screen axes
+  var windParticles = [];
+  var windRaf = null;
+  var reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function resizeWindCanvas(){
+    var dpr = window.devicePixelRatio || 1;
+    windCanvas.width = Math.round(window.innerWidth * dpr);
+    windCanvas.height = Math.round(window.innerHeight * dpr);
+    windCanvas.style.width = window.innerWidth + 'px';
+    windCanvas.style.height = window.innerHeight + 'px';
+    windCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resizeWindCanvas);
+  resizeWindCanvas();
+
+  function newParticle(){
+    return { x: Math.random() * window.innerWidth, y: Math.random() * window.innerHeight, age: (Math.random() * 90) | 0 };
+  }
+  function ensureParticles(){
+    var target = Math.max(90, Math.min(220, Math.round(window.innerWidth * window.innerHeight / 6500)));
+    windParticles = [];
+    for (var i = 0; i < target; i++) windParticles.push(newParticle());
   }
 
+  // Bilinear-interpolate the (u,v) km/h vector at a lat/lng from the sampled grid.
+  // u/v (not angle+speed) are interpolated directly so there's no wraparound glitch
+  // at the 0/360° boundary.
+  function sampleWind(lat, lng){
+    var g = windField;
+    if (!g) return null;
+    var latFrac = (lat - g.south) / (g.north - g.south);
+    var lngFrac = (lng - g.west) / (g.east - g.west);
+    if (latFrac < 0 || latFrac > 1 || lngFrac < 0 || lngFrac > 1) return null;
+    var gi = latFrac * (g.n - 1), gj = lngFrac * (g.n - 1);
+    var i0 = Math.floor(gi), j0 = Math.floor(gj);
+    var i1 = Math.min(i0 + 1, g.n - 1), j1 = Math.min(j0 + 1, g.n - 1);
+    var ti = gi - i0, tj = gj - j0;
+    function cell(i, j){ return g.cells[i * g.n + j]; }
+    function lerp(a, b, t){ return a + (b - a) * t; }
+    var c00 = cell(i0, j0), c10 = cell(i1, j0), c01 = cell(i0, j1), c11 = cell(i1, j1);
+    return {
+      u: lerp(lerp(c00.u, c10.u, ti), lerp(c01.u, c11.u, ti), tj),
+      v: lerp(lerp(c00.v, c10.v, ti), lerp(c01.v, c11.v, ti), tj)
+    };
+  }
+
+  var WIND_PX_SCALE = 0.045; // stylised km/h → px/frame factor, tuned by eye, not to real map scale
+  function speedColor(speedKmh, alpha){
+    // Cool (calm) → warm ember (strong), same idea as a classic wind-speed palette.
+    var t = Math.max(0, Math.min(1, speedKmh / 45));
+    var hue = 205 - t * 205; // 205 (blue) down to 0 (red)
+    return 'hsla(' + hue.toFixed(0) + ',85%,58%,' + alpha + ')';
+  }
+  function stepWindField(){
+    windRaf = requestAnimationFrame(stepWindField);
+    if (!windField) return;
+    var w = window.innerWidth, h = window.innerHeight;
+    windCtx.globalCompositeOperation = 'destination-in';
+    windCtx.fillStyle = 'rgba(0,0,0,0.90)'; // fade existing trails toward transparent
+    windCtx.fillRect(0, 0, w, h);
+    windCtx.globalCompositeOperation = 'source-over';
+
+    for (var i = 0; i < windParticles.length; i++){
+      var p = windParticles[i];
+      var latlng = map.containerPointToLatLng([p.x, p.y]);
+      var wv = sampleWind(latlng.lat, latlng.lng);
+      p.age--;
+      if (!wv || p.age <= 0){
+        var np = newParticle(); p.x = np.x; p.y = np.y; p.age = np.age;
+        continue;
+      }
+      var px = p.x, py = p.y;
+      p.x += wv.u * WIND_PX_SCALE;
+      p.y += wv.v * WIND_PX_SCALE;
+      if (p.x < 0 || p.x > w || p.y < 0 || p.y > h){
+        var np2 = newParticle(); p.x = np2.x; p.y = np2.y; p.age = np2.age;
+        continue;
+      }
+      var speed = Math.sqrt(wv.u * wv.u + wv.v * wv.v);
+      windCtx.lineCap = 'round';
+      // Dark under-stroke first so the colored streak still reads against light,
+      // low-saturation basemap areas (light theme especially) — same halo idea used
+      // elsewhere in this UI, just done as a canvas pass instead of a CSS filter.
+      windCtx.beginPath();
+      windCtx.moveTo(px, py);
+      windCtx.lineTo(p.x, p.y);
+      windCtx.strokeStyle = 'rgba(0,0,0,0.35)';
+      windCtx.lineWidth = 2.6;
+      windCtx.stroke();
+      windCtx.beginPath();
+      windCtx.moveTo(px, py);
+      windCtx.lineTo(p.x, p.y);
+      windCtx.strokeStyle = speedColor(speed, 0.9);
+      windCtx.lineWidth = 1.5;
+      windCtx.stroke();
+    }
+  }
+  function startWindField(){
+    if (reduceMotion || windRaf) return;
+    ensureParticles();
+    windRaf = requestAnimationFrame(stepWindField);
+  }
+  function stopWindField(){
+    if (windRaf){ cancelAnimationFrame(windRaf); windRaf = null; }
+    windField = null;
+    windCanvas.classList.remove('show');
+    windCenterMarkEl.classList.remove('show');
+    windCtx.clearRect(0, 0, windCanvas.width, windCanvas.height);
+  }
+
+  // European AQI scale (Open-Meteo air quality API) — same bins the EU uses for its own index.
   function aqiInfo(aqi){
     if (aqi <= 20) return { label: 'bon', color: '#7fce68' };
     if (aqi <= 40) return { label: 'moyen', color: '#ffd166' };
@@ -652,9 +783,26 @@
 
   function fetchWind(){
     windContentEl.textContent = 'Chargement…';
+    var b = map.getBounds();
+    var south = b.getSouth(), north = b.getNorth(), west = b.getWest(), east = b.getEast();
+    var points = [];
+    for (var i = 0; i < GRID_N; i++){
+      for (var j = 0; j < GRID_N; j++){
+        points.push({
+          lat: south + (north - south) * i / (GRID_N - 1),
+          lng: west + (east - west) * j / (GRID_N - 1)
+        });
+      }
+    }
+    var centerIdx = Math.floor(GRID_N / 2) * GRID_N + Math.floor(GRID_N / 2); // exact map center, since N is odd
     var c = map.getCenter();
-    var windUrl = 'https://api.open-meteo.com/v1/forecast?latitude=' + c.lat.toFixed(3) +
-      '&longitude=' + c.lng.toFixed(3) +
+    // Open-Meteo accepts comma-separated lists of coordinates and answers with one
+    // forecast object per point (in the same order) — a single request for the
+    // whole 25-point grid instead of 25 round trips.
+    var lats = points.map(function(p){ return p.lat.toFixed(3); }).join(',');
+    var lngs = points.map(function(p){ return p.lng.toFixed(3); }).join(',');
+    var windUrl = 'https://api.open-meteo.com/v1/forecast?latitude=' + lats +
+      '&longitude=' + lngs +
       '&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation' +
       '&hourly=precipitation_probability' +
       '&forecast_days=1&timezone=auto';
@@ -665,9 +813,9 @@
       fetch(windUrl).then(function(r){ if (!r.ok) throw new Error('http ' + r.status); return r.json(); }),
       fetch(aqiUrl).then(function(r){ if (!r.ok) throw new Error('http ' + r.status); return r.json(); }).catch(function(){ return null; }) // air quality is a bonus — don't break wind display if it fails
     ]).then(function(results){
-      var data = results[0], aqiData = results[1];
+      var grid = results[0], aqiData = results[1];
+      var data = grid[centerIdx];
       var cur = data.current;
-      var downwind = (cur.wind_direction_10m + 180) % 360;
       var hourly = data.hourly;
       var nowIdx = hourly.time.findIndex(function(t){ return new Date(t) >= new Date(cur.time); });
       if (nowIdx < 0) nowIdx = 0;
@@ -681,8 +829,19 @@
         aqiRow = '<div class="sheetRow"><span class="sw" style="background:' + info.color + '"></span> Qualité de l\'air : ' + aqi + ' — ' + info.label + '</div>';
       }
 
+      windField = {
+        south: south, north: north, west: west, east: east, n: GRID_N,
+        cells: grid.map(function(pointData){
+          var pc = pointData.current;
+          var downRad = ((pc.wind_direction_10m + 180) % 360) * Math.PI / 180;
+          return { u: Math.sin(downRad) * pc.wind_speed_10m, v: -Math.cos(downRad) * pc.wind_speed_10m };
+        })
+      };
+      windCanvas.classList.add('show');
+      windCenterMarkEl.classList.add('show');
+      startWindField();
+
       windContentEl.innerHTML =
-        windVizHtml(downwind, cur.wind_speed_10m) +
         '<div class="sheetRow" style="font-size:13px;color:var(--text);justify-content:center;">' +
           Math.round(cur.wind_speed_10m) + ' km/h depuis le ' + degToCompass(cur.wind_direction_10m) +
         '</div>' +
@@ -690,6 +849,7 @@
         aqiRow;
     }).catch(function(){
       windContentEl.textContent = "Impossible de récupérer la météo pour l'instant.";
+      stopWindField();
     });
   }
   map.on('moveend', function(){
