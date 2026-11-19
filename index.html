@@ -375,8 +375,20 @@
   // and appear as "no fires at all". The WMS endpoint reprojects server-side
   // and returns plain PNG tiles in EPSG:3857, which is what we want here.
   var GIBS_WMS = 'https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi';
-  var VIIRS_LAYERS = 'VIIRS_SNPP_Thermal_Anomalies_375m_All,VIIRS_NOAA20_Thermal_Anomalies_375m_All,VIIRS_NOAA21_Thermal_Anomalies_375m_All';
+  // One WMS request PER satellite, never several layers in one GetMap: if a single
+  // layer has no data for the date, GIBS fails the WHOLE request (XML exception,
+  // "shapefile cannot be found") and nothing is drawn at all. That is exactly what
+  // happened when Suomi NPP stopped publishing (~2 Nov 2026): the combined request
+  // failed every day and the map showed no fires. NOAA-20 is also often missing for
+  // "today" until its data is published. Separate requests = one missing satellite
+  // only hides itself.
+  var VIIRS_LAYERS = [
+    { key: 'noaa21', layer: 'VIIRS_NOAA21_Thermal_Anomalies_375m_All' },
+    { key: 'noaa20', layer: 'VIIRS_NOAA20_Thermal_Anomalies_375m_All' },
+    { key: 'snpp',   layer: 'VIIRS_SNPP_Thermal_Anomalies_375m_All' } // en panne depuis ~2/11/2026, gardé au cas où il revient
+  ];
   var MODIS_LAYERS = 'MODIS_Combined_Thermal_Anomalies_All';
+  var FIRE_OVERLAY_KEYS = VIIRS_LAYERS.map(function(v){ return v.key; }).concat(['modis']);
 
   // Fire hotspots used to be a Leaflet WMS *tile* layer: on every zoom/pan Leaflet
   // requests a whole grid (~9+) of independently-rendered tiles covering the world
@@ -390,7 +402,7 @@
   // actually on screen. Refetched on moveend so panning/zooming always shows the
   // right area; the previous image stays visible until the new one has loaded, so
   // there's never a blank gap while waiting on NASA.
-  var fireOverlays = {}; // key ('viirs'|'modis') -> the L.imageOverlay currently on the map
+  var fireOverlays = {}; // key (see FIRE_OVERLAY_KEYS) -> the L.imageOverlay currently on the map
   var FIRE_FRESH_MAX_ZOOM = 9; // VIIRS/MODIS pixels are 375m-1km — no extra real detail past here,
                                 // so we stop asking NASA for fresh renders and just let Leaflet
                                 // rescale the last image (also means zooming in on your area never
@@ -426,17 +438,16 @@
       if (old) map.removeLayer(old); // swap only after the new image is ready — old stays visible until then
       cb(false);
     };
-    preload.onerror = function(){ cb(true); };
+    // A GIBS error arrives as an XML body, which an <img> can't decode -> onerror.
+    // Drop any stale overlay for this satellite so an old day's image never lingers.
+    preload.onerror = function(){ clearFireOverlay(key); cb(true); };
     preload.src = url;
   }
 
   // forceFresh: bypass the "already have an overlay past FIRE_FRESH_MAX_ZOOM" reuse —
   // used when the underlying data actually changed (day toggle, MODIS toggle, manual refresh).
   function refreshFireData(forceFresh){
-    if (forceFresh){
-      clearFireOverlay('viirs');
-      clearFireOverlay('modis');
-    }
+    if (forceFresh) FIRE_OVERLAY_KEYS.forEach(clearFireOverlay);
     if (!state.showModis) clearFireOverlay('modis');
 
     // The NASA GIBS server that supplies fire hotspots can get very slow under
@@ -449,7 +460,9 @@
       if (myGeneration === loadGeneration) setStatus('Le service NASA (FIRMS) répond lentement aujourd’hui — patiente, ça va arriver…');
     }, 6000);
 
-    var wanted = [{ key: 'viirs', urlBuilder: function(b,s){ return buildGibsUrl(VIIRS_LAYERS,b,s); }, opacity: 1 }];
+    var wanted = VIIRS_LAYERS.map(function(v){
+      return { key: v.key, urlBuilder: function(b,s){ return buildGibsUrl(v.layer,b,s); }, opacity: 1 };
+    });
     if (state.showModis) wanted.push({ key: 'modis', urlBuilder: function(b,s){ return buildGibsUrl(MODIS_LAYERS,b,s); }, opacity: 0.85 });
 
     var done = 0, errored = 0;
@@ -460,7 +473,9 @@
         if (done >= wanted.length){
           clearTimeout(slowTimer);
           if (myGeneration !== loadGeneration) return; // superseded by a newer refresh
-          var prefix = errored > 0 ? 'Connexion instable · ' : 'À jour · ';
+          // A single satellite missing is normal (not yet published, or out of service):
+          // only report a problem when NOTHING could be loaded.
+          var prefix = errored >= wanted.length ? 'Connexion instable · ' : 'À jour · ';
           var note = state.day === 'today' ? ' · couverture partielle, se complète dans la journée' : '';
           setStatus(prefix + dateLabel() + ' · ' + nowLabel() + note);
           lastLoadTs = Date.now();
@@ -479,6 +494,12 @@
   var FIRMS_PROXY_URL = 'https://feux-firms-proxy.codeurmalinos.workers.dev';
   var FIRMS_BBOX = '-5,41,10,51'; // France métropolitaine + marge — même valeur que le Worker
   var FIRMS_MAX_POINTS = 5000; // garde-fou si une saison de feux extrême sature le rendu
+  // Les trois satellites VIIRS, interrogés séparément et fusionnés. Suomi NPP seul ne
+  // renvoie plus rien depuis ~2/11/2026 (liste vide, sans erreur) : c'est ce qui vidait
+  // la carte. Une source en panne n'empêche pas les autres de s'afficher.
+  var FIRMS_SOURCES = ['VIIRS_NOAA21_NRT', 'VIIRS_NOAA20_NRT', 'VIIRS_SNPP_NRT'];
+  var FIRMS_SATELLITE_NAMES = { N: 'Suomi NPP', N20: 'NOAA-20', N21: 'NOAA-21' };
+  var firmsGeneration = 0; // ignore a slow response superseded by a newer refresh
   var firmsPointsLayer = L.layerGroup().addTo(map);
   var FIRMS_CONFIDENCE = {
     l: { label: 'faible', color: '#ffb238' }, low: { label: 'faible', color: '#ffb238' },
@@ -520,13 +541,19 @@
 
   function refreshFirmsPoints(){
     firmsPointsLayer.clearLayers();
+    var myGeneration = ++firmsGeneration;
     if (!FIRMS_PROXY_URL || !state.showPoints) return;
     var wantedDate = isoDate(currentDate());
-    var url = FIRMS_PROXY_URL + '?bbox=' + encodeURIComponent(FIRMS_BBOX) + '&days=2&source=VIIRS_SNPP_NRT';
-    fetch(url).then(function(r){ if (!r.ok) throw new Error('http ' + r.status); return r.text(); })
-      .then(function(text){
-        if (!state.showPoints) return; // toggled off while the request was in flight
-        var points = parseFirmsCsv(text).filter(function(p){ return p.date === wantedDate; });
+    var base = FIRMS_PROXY_URL + '?bbox=' + encodeURIComponent(FIRMS_BBOX) + '&days=2&source=';
+    Promise.all(FIRMS_SOURCES.map(function(source){
+      return fetch(base + source)
+        .then(function(r){ if (!r.ok) throw new Error('http ' + r.status); return r.text(); })
+        .then(parseFirmsCsv)
+        .catch(function(){ return []; }); // une source en échec = simplement aucun point de ce satellite
+    }))
+      .then(function(lists){
+        if (myGeneration !== firmsGeneration || !state.showPoints) return; // superseded, or toggled off while in flight
+        var points = [].concat.apply([], lists).filter(function(p){ return p.date === wantedDate; });
         if (points.length > FIRMS_MAX_POINTS) points = points.slice(0, FIRMS_MAX_POINTS);
         points.forEach(function(p){
           var conf = FIRMS_CONFIDENCE[(p.confidence || '').toLowerCase()] || { label: p.confidence || '—', color: '#ff5a1a' };
@@ -536,7 +563,7 @@
           marker.bindPopup(
             '<b>Point de chaleur détecté</b><br>' +
             dateLabel() + ' · ' + firmsTimeLabel(p.time) + '<br>' +
-            'Confiance : ' + conf.label + (p.satellite ? ' · ' + p.satellite : '') +
+            'Confiance : ' + conf.label + (p.satellite ? ' · ' + (FIRMS_SATELLITE_NAMES[p.satellite] || p.satellite) : '') +
             (p.frp ? '<br>Puissance radiative : ' + p.frp.toFixed(0) + ' MW' : '')
           );
           marker.addTo(firmsPointsLayer);
